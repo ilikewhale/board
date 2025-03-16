@@ -91,35 +91,91 @@ def display_reviews():
             st.write(f"**후기 내용:** {review}")
             st.write(f"좋아요 수: {likes}")
 
-            left_column, right_column = st.columns(2)
+            # 버튼 행 추가 (좋아요, 수정, 삭제)
+            col1, col2, col3 = st.columns(3)
             
             # 좋아요 버튼 상태 확인 (이미 좋아요를 눌렀는지)
-            cursor.execute("SELECT * FROM like_records WHERE board_id = ? AND session_id = ?", (review_id, st.session_state.session_id))
+            cursor.execute("SELECT * FROM like_records WHERE board_id = ? AND session_id = ?", 
+                          (review_id, st.session_state.session_id))
             already_liked = cursor.fetchone() is not None
             
-            like_button = left_column.button(
+            # 좋아요 버튼
+            like_button = col1.button(
                 "이미 좋아요 누름" if already_liked else "좋아요", 
                 key=f"like_{idx}",
                 disabled=already_liked
             )
-            delete_button = right_column.button("삭제", key=f"delete_{idx}")
+            # 수정 버튼
+            edit_button = col2.button("수정", key=f"edit_{idx}")
+            # 삭제 버튼
+            delete_button = col3.button("삭제", key=f"delete_{idx}")
 
             if like_button:
                 handle_like(review_id)
 
+            # 수정 버튼 클릭 시
+            if edit_button:
+                st.session_state[f"show_edit_form_{review_id}"] = True
+                
+            # 수정 폼 표시
+            if st.session_state.get(f"show_edit_form_{review_id}", False):
+                password_input = st.text_input(f"리뷰 수정을 위한 비밀번호를 입력하세요", 
+                                              type="password", 
+                                              key=f"edit_pwd_{review_id}")
+                if st.session_state.get(f"edit_verified_{review_id}", False):
+                    # 비밀번호 인증 완료 시 수정 폼 표시
+                    new_review = st.text_area("수정할 내용", 
+                                             value=review, 
+                                             key=f"edit_content_{review_id}")
+                    save_button = st.button("저장", key=f"save_{review_id}")
+                    cancel_button = st.button("취소", key=f"cancel_{review_id}")
+                    
+                    if save_button:
+                        # 수정 내용 저장
+                        cursor.execute("UPDATE boards SET comment = ?, updated_at = CURRENT_TIMESTAMP WHERE board_id = ?", 
+                                      (new_review, review_id))
+                        conn.commit()
+                        # 수정 관련 상태 초기화
+                        del st.session_state[f"show_edit_form_{review_id}"]
+                        del st.session_state[f"edit_verified_{review_id}"]
+                        st.success("리뷰가 수정되었습니다.")
+                        now.sleep(1)
+                        st.rerun()
+                    
+                    if cancel_button:
+                        # 수정 취소 시 상태 초기화
+                        del st.session_state[f"show_edit_form_{review_id}"]
+                        del st.session_state[f"edit_verified_{review_id}"]
+                        st.rerun()
+                else:
+                    # 비밀번호 확인 버튼
+                    verify_button = st.button("비밀번호 확인", key=f"verify_edit_{review_id}")
+                    if verify_button:
+                        if password_input == password:
+                            st.session_state[f"edit_verified_{review_id}"] = True
+                            st.success("비밀번호가 확인되었습니다. 내용을 수정해주세요.")
+                            st.rerun()
+                        else:
+                            st.error("비밀번호가 일치하지 않습니다.")
+
+            # 삭제 버튼 클릭 시
             if delete_button:
-                # 삭제 폼을 표시하기 위한 상태 설정
                 st.session_state[f"show_delete_form_{review_id}"] = True
             
-            # 삭제 폼 표시 (삭제 버튼 클릭 시)
+            # 삭제 폼 표시
             if st.session_state.get(f"show_delete_form_{review_id}", False):
                 password_input = st.text_input(f"리뷰 삭제를 위한 비밀번호를 입력하세요", 
                                               type="password", 
-                                              key=f"pwd_{review_id}")
-                confirm_delete = st.button("확인", key=f"confirm_{review_id}")
+                                              key=f"del_pwd_{review_id}")
+                confirm_button = st.button("확인", key=f"confirm_del_{review_id}")
+                cancel_button = st.button("취소", key=f"cancel_del_{review_id}")
                 
-                if confirm_delete:
+                if confirm_button:
                     delete_with_password(review_id, name, password, password_input)
+                
+                if cancel_button:
+                    del st.session_state[f"show_delete_form_{review_id}"]
+                    st.rerun()
 
 def handle_like(review_id):
     """좋아요 버튼 클릭 시 좋아요 수 증가 (중복 방지)"""
