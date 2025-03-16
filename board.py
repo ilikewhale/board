@@ -1,17 +1,12 @@
 import streamlit as st
 import sqlite3
-import time
-
-now = time
+import time as now
 
 # DB 연동 - db이름: example.db
-conn = sqlite3.connect('board/example.db') # + db의 위치 고정 필요 
+conn = sqlite3.connect('example.db', check_same_thread=False)  
 cursor = conn.cursor()
 
-# DB에 테이블 생성 - 속성: board_id(PK), 이름, 리뷰
-# + 테이블 이름 복수형으로 변경 board -> boards
-# + 생성 날짜(created_at), 수정(updated_at) 날짜 추가
-# + 컬럼 이름 수정 : 이름 -> board_name, 내용 -> comment 
+# DB 테이블 생성
 cursor.execute('''
     CREATE TABLE IF NOT EXISTS boards (
         board_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -24,110 +19,168 @@ cursor.execute('''
     )
 ''')
 
-# SQLlite는 commit을 꼭 해줘야한대~
+# 좋아요 기록 테이블 생성 (사용자가 어떤 댓글에 좋아요를 눌렀는지 기록)
+cursor.execute('''
+    CREATE TABLE IF NOT EXISTS like_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        board_id INTEGER NOT NULL,
+        session_id TEXT NOT NULL,
+        UNIQUE(board_id, session_id)
+    )
+''')
 conn.commit()
 
-# + 세션 정보를 이용해 폼 초기화를 위한 초기 세션 정보 저장
+# 초기 세션 상태 설정
 if "user_name" not in st.session_state:
     st.session_state.user_name = ""
 if "user_password" not in st.session_state:
     st.session_state.user_password = ""
 if "user_review" not in st.session_state:
     st.session_state.user_review = ""
+if "session_id" not in st.session_state:
+    # 세션 ID 생성 (사용자 식별용)
+    import uuid
+    st.session_state.session_id = str(uuid.uuid4())
+# 비밀번호 입력 상태 추가
+if "delete_password" not in st.session_state:
+    st.session_state.delete_password = {}
 
 def info():
-    st.write('''사고닷을 사용해주셔서 감사합니다! 방명록을 남겨주세요 💖''')
+    """안내 메시지 출력"""
+    st.write("사고닷을 사용해주셔서 감사합니다! 방명록을 남겨주세요 💖")
 
-# 후기 작성
-def new_geustbook():
+def render_review_form():
+    """후기 작성 폼 생성"""
     st.header("사용자 후기")
-    
-    # 후기 작성 폼
     with st.form(key='review_form'):
-        user_name = st.text_input("이름", value=st.session_state.user_name, key="user_name") # 이름 작성하는 칸 생성
-        user_password = st.text_input("비밀번호", type="password", value=st.session_state.user_password, key="user_password") # + 비밀번호 작성 칸 생성
-        user_review = st.text_area("후기 작성", value=st.session_state.user_review, key="user_review") # 후기 작성 칸 생성
-        submit_button = st.form_submit_button("후기 제출") # 후기 제출 버튼 생성
+        user_name = st.text_input("이름", value=st.session_state.user_name, key="user_name")
+        user_password = st.text_input("비밀번호", type="password", value=st.session_state.user_password, key="user_password")
+        user_review = st.text_area("후기 작성", value=st.session_state.user_review, key="user_review")
+        submit_button = st.form_submit_button("후기 제출")
     
-    # 후기 제출 버튼 누른 후기 DB에 저장하기
-    if submit_button:
-        if user_name and user_password and user_review:
-            st.success("소중한 후기 감사합니다 😊")
-            cursor.execute("INSERT INTO boards (board_name, password, comment) VALUES (?, ?, ?)", (user_name, user_password, user_review)) #DB에 저장하기
-            conn.commit() # DB 변경 사항 저장
+    return user_name, user_password, user_review, submit_button
 
-            del st.session_state["user_name"]
-            del st.session_state["user_password"]
-            del st.session_state["user_review"]
+def handle_review_submission(user_name, user_password, user_review):
+    """후기 제출 시 DB 저장"""
+    if user_name and user_password and user_review:
+        cursor.execute("INSERT INTO boards (board_name, password, comment) VALUES (?, ?, ?)", (user_name, user_password, user_review))
+        conn.commit()
+        
+        st.success("소중한 후기 감사합니다 😊")
 
-            now.sleep(1)
-            st.rerun()
-        else:
-            st.error("이름과 후기를 모두 작성해 주세요.") # 이름이나 후기가 작성되지 않은 경우
+        # 세션 상태 초기화
+        for key in ["user_name", "user_password", "user_review"]:
+            if key in st.session_state:
+                del st.session_state[key]
 
-    # 제출된 후기 표시 (새로운 후기 먼저 표시)
+        now.sleep(1)
+        st.rerun()
+    else:
+        st.error("이름과 비밀번호, 후기를 모두 작성해 주세요.")
+
+def display_reviews():
+    """저장된 후기 목록을 출력"""
     st.write("### 방명록")
+    cursor.execute("SELECT * FROM boards ORDER BY board_id DESC")
+    all_reviews = cursor.fetchall()
 
-    cursor.execute("SELECT * FROM boards ORDER BY board_id DESC") # DB에서 정보 가져오기
-    all_review = cursor.fetchall() # DB 정보들 all_review 변수로 선언
+    for idx, row in enumerate(all_reviews):
+        review_id, name, password, review, likes = row[:5]
 
-    # 제출된 리뷰 보기 & 삭제하기 & 편집하기
-    for idx, row in enumerate(all_review):
-        review_id = row[0]
-        name = row[1]  # 이름
-        #password = row[2] # + 비밀번호
-        review = row[3]  # 리뷰
-        likes = row[4] # + 좋아요 수
-
-        print(row) # + 조회 결과 표시 - 데이터 확인
-
-        with st.expander(f"💛 {name}님의 리뷰"):  # 각 리뷰는 펼침(expander) 형식으로 보여줍니다
+        with st.expander(f"💛 {name}님의 리뷰"):
             st.write(f"**후기 내용:** {review}")
             st.write(f"좋아요 수: {likes}")
 
-            left_column, right_column = st.columns(2) 
-            like_button = left_column.button("좋아요", key=f"like_{idx}") # + 좋아요 버튼
-            delete_button = right_column.button("삭제", key=f"delete_{idx}") # 리뷰 삭제 버튼
+            left_column, right_column = st.columns(2)
+            
+            # 좋아요 버튼 상태 확인 (이미 좋아요를 눌렀는지)
+            cursor.execute("SELECT * FROM like_records WHERE board_id = ? AND session_id = ?", (review_id, st.session_state.session_id))
+            already_liked = cursor.fetchone() is not None
+            
+            like_button = left_column.button(
+                "이미 좋아요 누름" if already_liked else "좋아요", 
+                key=f"like_{idx}",
+                disabled=already_liked
+            )
+            delete_button = right_column.button("삭제", key=f"delete_{idx}")
 
-            #edit_button = left_column.button("편집", key=f"edit_{idx}") # 리뷰 편집 버튼
-
-            # + 좋아요 버튼 클릭 시 좋아요 + 1
             if like_button:
-                cursor.execute("SELECT likes FROM boards WHERE board_id = ?", (review_id, ))
-                one_review = cursor.fetchall()
-                total_like = int(one_review[0][0]) + 1 # + 좋아요 증가
-                cursor.execute("UPDATE boards SET likes = ? WHERE board_id = ?", (total_like, review_id))
-                conn.commit()
-                st.rerun()
+                handle_like(review_id)
 
-            # 삭제 버튼 클릭 시 리뷰 삭제
-            # + -> 여기서 비밀번호 일치 여부 확인 구현하면 됩니당 !!
             if delete_button:
-                cursor.execute("DELETE FROM boards WHERE board_id = ?", (review_id, ))
-                conn.commit()  # 변경사항을 DB에 적용
-                st.write(f"{name}님의 리뷰가 삭제되었습니다.")
-                st.rerun()  # 페이지 새로 고침
-        # 편집 버튼 클릭 시 리뷰 수정
-        #   elif edit_button:
-        #    ### 오류 있음
-        #    edir_password = st.text_input("비밀번호", type="password")
-        #    edir_review = st.text_area("후기 수정")
-        #    save_button = st.button("후기 저장")
-        #    if save_button:
-        #        if (edir_password == password):
-        #            cursor.execute("UPDATE boards SET comment = ? WHERE board_id = ?", (edir_review, review_id, ))
-        #            conn.commit()
+                # 삭제 폼을 표시하기 위한 상태 설정
+                st.session_state[f"show_delete_form_{review_id}"] = True
+            
+            # 삭제 폼 표시 (삭제 버튼 클릭 시)
+            if st.session_state.get(f"show_delete_form_{review_id}", False):
+                password_input = st.text_input(f"리뷰 삭제를 위한 비밀번호를 입력하세요", 
+                                              type="password", 
+                                              key=f"pwd_{review_id}")
+                confirm_delete = st.button("확인", key=f"confirm_{review_id}")
+                
+                if confirm_delete:
+                    delete_with_password(review_id, name, password, password_input)
 
-        #            st.success("성공적으로 수정했습니다.")
-        #        else:
-        #            st.error("비밀번호가 일치하지 않습니다.")
+def handle_like(review_id):
+    """좋아요 버튼 클릭 시 좋아요 수 증가 (중복 방지)"""
+    session_id = st.session_state.session_id
+    
+    # 이미 좋아요를 눌렀는지 확인
+    cursor.execute("SELECT * FROM like_records WHERE board_id = ? AND session_id = ?", 
+                  (review_id, session_id))
+    
+    if cursor.fetchone() is None:  # 아직 좋아요를 누르지 않았다면
+        try:
+            # 좋아요 수 증가
+            cursor.execute("UPDATE boards SET likes = likes + 1 WHERE board_id = ?", (review_id,))
+            
+            # 좋아요 기록 추가
+            cursor.execute("INSERT INTO like_records (board_id, session_id) VALUES (?, ?)", 
+                          (review_id, session_id))
+            
+            conn.commit()
+            st.success("좋아요를 눌렀습니다!")
+        except sqlite3.IntegrityError:
+            st.warning("이미 좋아요를 눌렀습니다.")
+    else:
+        st.warning("이미 좋아요를 누른 댓글입니다.")
+    
+    now.sleep(1)
+    st.rerun()
 
-# Streamlit 페이지 구조
+def delete_with_password(review_id, name, stored_password, input_password):
+    """비밀번호 확인 후 댓글 삭제"""
+    if input_password == stored_password:
+        # 비밀번호가 일치하면 삭제
+        cursor.execute("DELETE FROM boards WHERE board_id = ?", (review_id,))
+        # 관련 좋아요 기록도 삭제
+        cursor.execute("DELETE FROM like_records WHERE board_id = ?", (review_id,))
+        conn.commit()
+        
+        # 삭제 폼 상태 초기화
+        if f"show_delete_form_{review_id}" in st.session_state:
+            del st.session_state[f"show_delete_form_{review_id}"]
+            
+        st.success(f"{name}님의 리뷰가 삭제되었습니다.")
+        now.sleep(1)
+        st.rerun()
+    else:
+        st.error("비밀번호가 일치하지 않습니다.")
+
 def main():
+    """메인 실행 함수"""
     st.title("사고닷 방명록")
     info()
-    # 각 섹션 호출
-    new_geustbook()
+
+    # 후기 작성 폼 실행
+    user_name, user_password, user_review, submit_button = render_review_form()
+    
+    # 제출 버튼 클릭 시 처리
+    if submit_button:
+        handle_review_submission(user_name, user_password, user_review)
+
+    # 저장된 리뷰 목록 표시
+    display_reviews()
 
 if __name__ == "__main__":
     main()
